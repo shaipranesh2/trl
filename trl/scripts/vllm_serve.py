@@ -167,6 +167,8 @@ class ScriptArguments:
             Revision to use for the model. If not specified, the default branch will be used.
         tensor_parallel_size (`int`, *optional*, defaults to `1`):
             Number of tensor parallel workers to use.
+        pipeline_parallel_size (`int`, *optional*, defaults to `1`):
+            Number of pipeline parallel workers to use.
         host (`str`, *optional*, defaults to `"0.0.0.0"`):
             Host address to run the server on.
         port (`int`, *optional*, defaults to `8000`):
@@ -196,6 +198,10 @@ class ScriptArguments:
     tensor_parallel_size: int = field(
         default=1,
         metadata={"help": "Number of tensor parallel workers to use."},
+    )
+    pipeline_parallel_size: int = field(
+        default=1,
+        metadata={"help": "Number of pipeline parallel workers to use."},
     )
     host: str = field(
         default="0.0.0.0",
@@ -261,6 +267,7 @@ def main(script_args: ScriptArguments):
         model=script_args.model,
         revision=script_args.revision,
         tensor_parallel_size=script_args.tensor_parallel_size,
+        pipeline_parallel_size=script_args.pipeline_parallel_size,
         gpu_memory_utilization=script_args.gpu_memory_utilization,
         dtype=script_args.dtype,
         # Automatic Prefix Caching caches the KV cache of existing queries, so that a new query can
@@ -296,7 +303,23 @@ def main(script_args: ScriptArguments):
         ```
         """
         return {"tensor_parallel_size": llm.llm_engine.parallel_config.tensor_parallel_size}
+    
+    @app.get("/get_pipeline_parallel_size/")
+    async def get_pipeline_parallel_size():
+        """
+        Retrieves the pipeline parallel size from the LLM engine.
 
+        Returns:
+            `dict`:
+                A dictionary containing the pipeline parallel size.
+
+        Example response:
+        ```json
+        {"pipeline_parallel_size": 2}
+        ```
+        """
+        return {"pipeline_parallel_size": llm.llm_engine.parallel_config.pipeline_parallel_size}
+         
     class GenerateRequest(BaseModel):
         prompts: list[str]
         n: int = 1
@@ -373,10 +396,13 @@ def main(script_args: ScriptArguments):
                 - `port` (`int`): Port number to be used for communication.
                 - `world_size` (`int`): Total number of participating processes in the group.
         """
+        # Calculate total number of workers (TP × PP) + client process
+        total_workers = script_args.tensor_parallel_size * script_args.pipeline_parallel_size + 1
+
         background_tasks.add_task(
             llm.collective_rpc,
             "init_communicator",
-            args=(request.host, request.port, script_args.tensor_parallel_size + 1),
+            args=(request.host, request.port, total_workers),
         )
         return {"message": "Request received, initializing communicator"}
 
