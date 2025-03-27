@@ -197,11 +197,12 @@ class VLLMClient:
         response = requests.get(url)
         if response.status_code == 200:
             tensor_parallel_size = response.json()["tensor_parallel_size"]
+            pipeline_parallel_size=2
         else:
             raise Exception(f"Request failed: {response.status_code}, {response.text}")
 
-        world_size = tensor_parallel_size + 1
-        self.rank = tensor_parallel_size  # The client's rank is the last process
+        world_size = tensor_parallel_size * pipeline_parallel_size + 1
+        self.rank = tensor_parallel_size * pipeline_parallel_size # The client's rank is the last process
 
         # Initialize weight update group
         url = f"http://{self.host}:{self.server_port}/init_communicator/"

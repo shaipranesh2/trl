@@ -49,7 +49,8 @@ else:
     libcuda_available = True
 
 if is_vllm_available() and libcuda_available:
-    from vllm import LLM, SamplingParams
+    from vllm import SamplingParams
+    from vllm.engine.async_llm_engine import AsyncLLMEngine, AsyncEngineArgs
     from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
     from vllm.distributed.parallel_state import get_world_group
     from vllm.distributed.utils import StatelessProcessGroup
@@ -262,22 +263,33 @@ def main(script_args: ScriptArguments):
 
     if not is_vllm_available():
         raise ImportError("vLLM is required to run the vLLM serve script. Please install it using `pip install vllm`.")
-
-    llm = LLM(
-        model=script_args.model,
-        revision=script_args.revision,
-        tensor_parallel_size=script_args.tensor_parallel_size,
-        pipeline_parallel_size=script_args.pipeline_parallel_size,
-        gpu_memory_utilization=script_args.gpu_memory_utilization,
-        dtype=script_args.dtype,
-        # Automatic Prefix Caching caches the KV cache of existing queries, so that a new query can
-        # directly reuse the KV cache if it shares the same prefix with one of the existing queries.
-        # This is particularly useful here because we generate completions from the same prompts.
-        enable_prefix_caching=script_args.enable_prefix_caching,
-        max_model_len=script_args.max_model_len,
-        worker_cls=WeightSyncWorker,
-    )
-
+    
+    engine_args = AsyncEngineArgs(
+    model=script_args.model,
+    revision=script_args.revision,
+    tensor_parallel_size=script_args.tensor_parallel_size,
+    pipeline_parallel_size=script_args.pipeline_parallel_size,
+    gpu_memory_utilization=script_args.gpu_memory_utilization,
+    dtype=script_args.dtype,
+    enable_prefix_caching=script_args.enable_prefix_caching,
+    max_model_len=script_args.max_model_len,
+    #worker_cls=WeightSyncWorker,
+)
+    # llm = AsyncLLMEngine(
+    #     model=script_args.model,
+    #     revision=script_args.revision,
+    #     tensor_parallel_size=script_args.tensor_parallel_size,
+    #     pipeline_parallel_size=script_args.pipeline_parallel_size,
+    #     gpu_memory_utilization=script_args.gpu_memory_utilization,
+    #     dtype=script_args.dtype,
+    #     # Automatic Prefix Caching caches the KV cache of existing queries, so that a new query can
+    #     # directly reuse the KV cache if it shares the same prefix with one of the existing queries.
+    #     # This is particularly useful here because we generate completions from the same prompts.
+    #     enable_prefix_caching=script_args.enable_prefix_caching,
+    #     max_model_len=script_args.max_model_len,
+    #     worker_cls=WeightSyncWorker,
+    # )
+    llm = AsyncLLMEngine.from_engine_args(engine_args)
     app = FastAPI()
 
     # Define the endpoints for the model server
@@ -302,7 +314,9 @@ def main(script_args: ScriptArguments):
         {"tensor_parallel_size": 8}
         ```
         """
-        return {"tensor_parallel_size": llm.llm_engine.parallel_config.tensor_parallel_size}
+        parallel_config = await llm.get_parallel_config()
+        return {"tensor_parallel_size": parallel_config.tensor_parallel_size}
+        #return {"tensor_parallel_size": llm.parallel_config.tensor_parallel_size}
     
     @app.get("/get_pipeline_parallel_size/")
     async def get_pipeline_parallel_size():
@@ -318,7 +332,8 @@ def main(script_args: ScriptArguments):
         {"pipeline_parallel_size": 2}
         ```
         """
-        return {"pipeline_parallel_size": llm.llm_engine.parallel_config.pipeline_parallel_size}
+        #change the llm_engine to ---> async_llm_engine
+        return {"pipeline_parallel_size": llm.parallel_config.pipeline_parallel_size}
          
     class GenerateRequest(BaseModel):
         prompts: list[str]
@@ -375,7 +390,7 @@ def main(script_args: ScriptArguments):
             max_tokens=request.max_tokens,
             guided_decoding=guided_decoding,
         )
-        all_outputs = llm.generate(request.prompts, sampling_params=sampling_params)
+        all_outputs = await llm.generate(request.prompts, sampling_params=sampling_params)
         completion_ids = [list(output.token_ids) for outputs in all_outputs for output in outputs.outputs]
         return {"completion_ids": completion_ids}
 
@@ -440,7 +455,7 @@ def main(script_args: ScriptArguments):
         """
         Resets the prefix cache for the model.
         """
-        success = llm.llm_engine.reset_prefix_cache()
+        success = llm.reset_prefix_cache()
         return {"message": "Request received, resetting prefix cache status: " + str(success)}
 
     @app.post("/close_communicator/")
